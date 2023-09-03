@@ -31,10 +31,10 @@ fn is_invoked_through_cargo() -> Result<bool, &'static str> {
 }
 
 fn construct_cli() -> Result<Command, &'static str> {
-    let is_invoked_through_cargo = is_invoked_through_cargo()?;
     // Custom subcommands may use the CARGO environment variable to call back to Cargo.
     // Add it as an optional parameter, if it's usefull.
-    let mut m = Command::new("Cargo Subcommand")
+    let invoked_through_cargo = is_invoked_through_cargo()?;
+    let command = Command::new("Cargo Subcommand")
         .author("Arttu Valo, arttu.valo@gmail.com")
         .version("0.1.0")
         .about("This is a template for Cargo subcommands")
@@ -46,28 +46,72 @@ fn construct_cli() -> Result<Command, &'static str> {
             .env("CARGO")
             .value_name("Cargo binary path")
             .required(false)
-            .value_parser(value_parser!(PathBuf)));
-    // Add subcommand as optional hidden parameter, if invoked from Cargo
-    if is_invoked_through_cargo {
-        m = match env::args().nth(1) {
-            Some(subcommand) => m.arg(Arg::new(subcommand).hide(true).required(false)),
-            None => return Err("Failed to read subcommand name from arguments!")
+            .value_parser(value_parser!(PathBuf))
+            .global(true))
+        .propagate_version(true)
+        .subcommand_required(true)
+        .disable_help_subcommand(true)
+        .arg_required_else_help(true);
+    let subcommands = [
+        Command::new("add")
+                .about("Adds files to myapp")
+                .arg(Arg::new("name").value_name("NAME")),
+        Command::new("environment")
+                .about("Display environment information")
+    ];
+    if invoked_through_cargo {
+        let subcommand = match env::args().nth(1) {
+            Some(subcommand_name) => Command::new(subcommand_name)
+                .hide(true)
+                .subcommand_required(true)
+                .subcommands(subcommands),
+            None => {
+                return Err("Failed to read subcommand name from arguments!");
+            }
         };
+        Ok(command.bin_name("cargo").subcommand(subcommand))
+    } else {
+        Ok(command.subcommands(subcommands))
     }
-    Ok(m)
 }
 
 fn main() -> ExitCode {
-    let m = match construct_cli() {
-        Ok(command) => command.get_matches(),
+    let invoked_through_cargo = match is_invoked_through_cargo() {
+        Ok(is_invoked_through_cargo) => is_invoked_through_cargo,
+        Err(error) => {
+            println!("Failed to check invocation method: {}", error);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let command = match construct_cli() {
+        Ok(cli) => cli,
         Err(error) => {
             println!("Failed to construct CLI: {}", error);
             return ExitCode::FAILURE;
         }
     };
-    match m.get_one::<PathBuf>("cargo-bin") {
-        Some(cargo_bin) => println!("Using Cargo from path {:?}", cargo_bin),
-        None => println!("Cargo binary not specified")
+
+    let matches = command.get_matches();
+
+    let subcommands = if invoked_through_cargo {
+        match matches.subcommand() {
+            Some(("subcommand", sub_matches)) => sub_matches.subcommand(),
+            _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`")
+        }
+    } else {
+        matches.subcommand()
+    };
+
+    match subcommands {
+        Some(("add", sub_matches)) => println!(
+            "'myapp add' was used, name is: {:?}",
+            sub_matches.get_one::<String>("name")
+        ),
+        Some(("environment", sub_matches)) => {
+            println!("Cargo binary path: {:?}", sub_matches.get_one::<PathBuf>("cargo-bin"));
+        },
+        _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`")
     };
 
     ExitCode::SUCCESS
